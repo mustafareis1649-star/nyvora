@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Nyvora Games - Arena Floor</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#050507; height:100%; }
+  #canvas-wrap { position:fixed; inset:0; }
+  #hint {
+    position:fixed; left:16px; bottom:14px; z-index:5;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-size:12px;
+    color:#9aa0ad; background:rgba(10,10,14,0.55); padding:8px 12px;
+    border-radius:8px; border:1px solid rgba(150,120,255,0.25);
+    backdrop-filter: blur(4px);
+  }
+  #hint b { color:#c9b8ff; }
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+<div id="hint">Sürükle: kamerayı döndür &nbsp;|&nbsp; Tekerlek: yakınlaştır &nbsp;|&nbsp; <b>NYVORA GAMES</b> arena zemini önizlemesi</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* Minimal self-contained orbit-style camera control (no external OrbitControls
+   file needed — cdnjs doesn't host the three.js "examples" folder, which is
+   what caused the "THREE.OrbitControls is not a constructor" error, and this
+   also makes the file a single dependency-free asset — ideal for dropping
+   straight into a GitHub repo / Vercel deploy). */
+class SimpleOrbitControls {
+  constructor(camera, domElement) {
+    this.camera = camera;
+    this.domElement = domElement;
+    this.target = new THREE.Vector3(0, 1, 0);
+    this.minDistance = 4;
+    this.maxDistance = 60;
+    this.maxPolarAngle = Math.PI * 0.49;
+    this.enableDamping = true;
+    this.dampingFactor = 0.08;
+
+    const offset = new THREE.Vector3().copy(camera.position).sub(this.target);
+    const spherical = new THREE.Spherical().setFromVector3(offset);
+    this._spherical = spherical;
+    this._targetSpherical = spherical.clone();
+
+    this._dragging = false;
+    this._prev = { x: 0, y: 0 };
+
+    domElement.addEventListener('pointerdown', (e) => {
+      this._dragging = true;
+      this._prev.x = e.clientX; this._prev.y = e.clientY;
+    });
+    window.addEventListener('pointerup', () => { this._dragging = false; });
+    window.addEventListener('pointermove', (e) => {
+      if (!this._dragging) return;
+      const dx = e.clientX - this._prev.x;
+      const dy = e.clientY - this._prev.y;
+      this._prev.x = e.clientX; this._prev.y = e.clientY;
+      this._targetSpherical.theta -= dx * 0.006;
+      this._targetSpherical.phi -= dy * 0.006;
+      this._targetSpherical.phi = Math.max(0.05, Math.min(this.maxPolarAngle, this._targetSpherical.phi));
+    });
+    domElement.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this._targetSpherical.radius += e.deltaY * 0.02;
+      this._targetSpherical.radius = Math.max(this.minDistance, Math.min(this.maxDistance, this._targetSpherical.radius));
+    }, { passive: false });
+  }
+
+  update() {
+    const s = this._spherical, t = this._targetSpherical;
+    if (this.enableDamping) {
+      s.theta += (t.theta - s.theta) * this.dampingFactor;
+      s.phi += (t.phi - s.phi) * this.dampingFactor;
+      s.radius += (t.radius - s.radius) * this.dampingFactor;
+    } else {
+      s.copy(t);
+    }
+    const offset = new THREE.Vector3().setFromSpherical(s);
+    this.camera.position.copy(this.target).add(offset);
+    this.camera.lookAt(this.target);
+  }
+}
+</script>
+<script>
+/* =========================================================================
+   NYVORA GAMES — Sci-Fi Arena Floor
+   Reusable Three.js asset. Drop createNyvoraArenaFloor() into any Three.js
+   scene/game: it returns a THREE.Group you can add with scene.add(group).
+   Everything is procedural (canvas textures + geometry) — no external
+   image files required, so it's easy to drop straight into a project.
+   ========================================================================= */
+
+// ---------- small canvas texture helpers ----------------------------------
+
+function makeCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  return c;
+}
+
+function noise(ctx, size, count, alpha) {
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = Math.random() * size * 0.02 + 1;
+    const shade = Math.random() > 0.5 ? 255 : 0;
+    ctx.fillStyle = `rgba(${shade},${shade},${shade},${Math.random() * alpha})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// octagon path helper (square with cut corners), size = half-width, cut = corner size
+function octagonPath(ctx, cx, cy, size, cut) {
+  const pts = [
+    [cx - size + cut, cy - size], [cx + size - cut, cy - size],
+    [cx + size, cy - size + cut], [cx + size, cy + size - cut],
+    [cx + size - cut, cy + size], [cx - size + cut, cy + size],
+    [cx - size, cy + size - cut], [cx - size, cy - size + cut]
+  ];
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+}
+
+// ---------- floor surface texture (base color) -----------------------------
+
+function buildFloorColorTexture() {
+  const size = 2048;
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = '#1b1c20';
+  ctx.fillRect(0, 0, size, size);
+
+  const cut = size * 0.09;
+  octagonPath(ctx, size / 2, size / 2, size * 0.485, cut);
+  const grad = ctx.createRadialGradient(size / 2, size / 2, size * 0.05, size / 2, size / 2, size * 0.6);
+  grad.addColorStop(0, '#4a4c52');
+  grad.addColorStop(0.55, '#34363c');
+  grad.addColorStop(1, '#232428');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  noise(ctx, size, 9000, 0.05);
+
+  // quadrant seam lines
+  ctx.strokeStyle = 'rgba(10,10,12,0.55)';
+  ctx.lineWidth = size * 0.006;
+  const inset = size * 0.09;
+  ctx.beginPath(); ctx.moveTo(size / 2, inset); ctx.lineTo(size / 2, size - inset); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(inset, size / 2); ctx.lineTo(size - inset, size / 2); ctx.stroke();
+
+  // vent grate details (four quadrants)
+  function grate(gx, gy, w, h, cols) {
+    ctx.save();
+    ctx.translate(gx, gy);
+    ctx.fillStyle = 'rgba(5,5,6,0.6)';
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.strokeStyle = 'rgba(60,62,68,0.9)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i <= cols; i++) {
+      const x = -w / 2 + (w / cols) * i;
+      ctx.beginPath(); ctx.moveTo(x, -h / 2); ctx.lineTo(x, h / 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  const gw = size * 0.09, gh = size * 0.022;
+  const gOff = size * 0.255;
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy]) => {
+    grate(size/2 + sx*gOff, size/2 + sy*gOff*0.62, gw, gh, 6);
+  });
+
+  // panel bevel shading near the outer edge
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = size * 0.012;
+  octagonPath(ctx, size / 2, size / 2, size * 0.485 - 4, cut);
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+// ---------- floor emissive texture (gold trim lines + center glow) ---------
+
+function buildFloorEmissiveTexture() {
+  const size = 2048;
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, size, size);
+
+  const cut = size * 0.09;
+
+  function goldStroke(w) {
+    ctx.strokeStyle = '#e8a748';
+    ctx.lineWidth = w;
+    ctx.shadowColor = '#ffbf5c';
+    ctx.shadowBlur = w * 1.4;
+  }
+
+  // outer trim
+  goldStroke(size * 0.007);
+  octagonPath(ctx, size / 2, size / 2, size * 0.485, cut);
+  ctx.stroke();
+
+  // inner octagon ring (raised dais outline)
+  goldStroke(size * 0.009);
+  octagonPath(ctx, size / 2, size / 2, size * 0.205, size * 0.06);
+  ctx.stroke();
+
+  // secondary inner ring (slightly smaller, brighter)
+  goldStroke(size * 0.006);
+  octagonPath(ctx, size / 2, size / 2, size * 0.165, size * 0.05);
+  ctx.stroke();
+
+  // radial spokes from center octagon to quadrant seams
+  goldStroke(size * 0.005);
+  const cx = size / 2, cy = size / 2, rOuter = size * 0.485 - size*0.03;
+  [[0,-1],[0,1],[-1,0],[1,0]].forEach(([dx,dy])=>{
+    ctx.beginPath();
+    ctx.moveTo(cx + dx*size*0.2, cy + dy*size*0.2);
+    ctx.lineTo(cx + dx*rOuter, cy + dy*rOuter);
+    ctx.stroke();
+  });
+
+  ctx.shadowBlur = 0;
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+// ---------- center medallion logo texture (teal -> purple bar mark) --------
+
+function buildLogoTexture() {
+  const size = 1024;
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, size, size);
+
+  const grad = ctx.createLinearGradient(size*0.2, size*0.25, size*0.8, size*0.75);
+  grad.addColorStop(0, '#33e6b5');
+  grad.addColorStop(0.5, '#7d7bf0');
+  grad.addColorStop(1, '#9b4ce0');
+
+  // three parallelogram bars forming a stylized "N" mark
+  function bar(yCenter, thickness, skew, alignRight) {
+    const w = size * 0.5, h = thickness;
+    ctx.save();
+    ctx.translate(size/2, yCenter);
+    ctx.beginPath();
+    ctx.moveTo(-w/2 - skew, -h/2);
+    ctx.lineTo(w/2 - skew, -h/2);
+    ctx.lineTo(w/2 + skew, h/2);
+    ctx.lineTo(-w/2 + skew, h/2);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.shadowColor = '#8f6cf0';
+    ctx.shadowBlur = size * 0.03;
+    ctx.fill();
+    ctx.restore();
+  }
+  bar(size*0.36, size*0.09, size*0.05);
+  bar(size*0.50, size*0.09, -size*0.05);
+  bar(size*0.64, size*0.09, size*0.05);
+
+  ctx.shadowBlur = 0;
+  ctx.font = `bold ${size*0.075}px Segoe UI, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#dcd6ff';
+  ctx.fillText('NYVORA', size/2, size*0.90);
+
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+// ---------- billboard texture: "NYVORA GAMES" ------------------------------
+
+function buildBillboardTexture() {
+  const w = 1024, h = 512;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0b0c10';
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = 'rgba(150,120,255,0.5)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(10, 10, w-20, h-20);
+
+  const grad = ctx.createLinearGradient(0, 0, w, 0);
+  grad.addColorStop(0, '#38e8c0');
+  grad.addColorStop(1, '#a24cf0');
+  ctx.fillStyle = grad;
+  ctx.shadowColor = '#a97cff';
+  ctx.shadowBlur = 28;
+  ctx.textAlign = 'center';
+  ctx.font = `700 ${h*0.16}px Segoe UI, sans-serif`;
+  ctx.fillText('NYVORA', w/2, h*0.46);
+  ctx.font = `700 ${h*0.22}px Segoe UI, sans-serif`;
+  ctx.fillText('GAMES', w/2, h*0.78);
+
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+// ---------- geometry builders ----------------------------------------------
+
+function octagonShape(size, cut) {
+  const s = new THREE.Shape();
+  s.moveTo(-size + cut, -size);
+  s.lineTo(size - cut, -size);
+  s.lineTo(size, -size + cut);
+  s.lineTo(size, size - cut);
+  s.lineTo(size - cut, size);
+  s.lineTo(-size + cut, size);
+  s.lineTo(-size, size - cut);
+  s.lineTo(-size, -size + cut);
+  s.closePath();
+  return s;
+}
+
+function buildBillboard(textTexture) {
+  const group = new THREE.Group();
+
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x1a1b20, roughness: 0.5, metalness: 0.7 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x2a1c40, emissive: 0x8a4ce0, emissiveIntensity: 1.4, roughness: 0.4 });
+
+  const pole = new THREE.Mesh(new THREE.BoxGeometry(0.5, 3.4, 0.5), poleMat);
+  pole.position.y = 1.7;
+  group.add(pole);
+
+  const panelW = 2.6, panelH = 1.3;
+  const panelGeo = new THREE.BoxGeometry(panelW, panelH, 0.15);
+  const screenMat = new THREE.MeshStandardMaterial({
+    map: textTexture, emissiveMap: textTexture, emissive: 0xffffff,
+    emissiveIntensity: 1.1, roughness: 0.35, metalness: 0.1
+  });
+  const panel = new THREE.Mesh(panelGeo, screenMat);
+  panel.position.y = 3.6;
+  group.add(panel);
+
+  const frameGeo = new THREE.BoxGeometry(panelW + 0.14, panelH + 0.14, 0.08);
+  const frame = new THREE.Mesh(frameGeo, trimMat);
+  frame.position.set(0, 3.6, -0.1);
+  group.add(frame);
+
+  return group;
+}
+
+function buildPlanter() {
+  const group = new THREE.Group();
+  const boxMat = new THREE.MeshStandardMaterial({ color: 0x1c1d22, roughness: 0.6, metalness: 0.5 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x201030, emissive: 0x9a4cf0, emissiveIntensity: 1.6 });
+
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.6, 1.4), boxMat);
+  box.position.y = 0.3;
+  group.add(box);
+
+  const trim = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 1.5), trimMat);
+  trim.position.y = 0.6;
+  group.add(trim);
+
+  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x1c5c3a, emissive: 0x2fdc7a, emissiveIntensity: 0.6, roughness: 0.7 });
+  for (let i = 0; i < 6; i++) {
+    const s = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22 + Math.random()*0.1, 0), foliageMat);
+    s.position.set((Math.random()-0.5)*0.9, 0.65 + Math.random()*0.35, (Math.random()-0.5)*0.9);
+    group.add(s);
+  }
+  return group;
+}
+
+function buildStaircase(steps, width) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x2c2d32, roughness: 0.7, metalness: 0.4 });
+  const edgeMat = new THREE.MeshStandardMaterial({ color: 0x3a2010, emissive: 0xe8a748, emissiveIntensity: 0.8 });
+  const stepH = 0.22, stepD = 0.42;
+  for (let i = 0; i < steps; i++) {
+    const depth = stepD * (steps - i);
+    const step = new THREE.Mesh(new THREE.BoxGeometry(width, stepH, stepD), mat);
+    step.position.set(0, stepH * i + stepH/2, -stepD*i);
+    group.add(step);
+    const edge = new THREE.Mesh(new THREE.BoxGeometry(width, 0.02, 0.04), edgeMat);
+    edge.position.set(0, stepH*(i+1), -stepD*i - stepD/2 + 0.02);
+    group.add(edge);
+  }
+  return group;
+}
+
+// ---------- main export: full arena floor group ----------------------------
+
+function createNyvoraArenaFloor() {
+  const group = new THREE.Group();
+  group.name = 'NyvoraArenaFloor';
+
+  const FLOOR_SIZE = 12;   // half-width of the octagon
+  const CUT = 2.2;
+
+  // base slab
+  const floorShape = octagonShape(FLOOR_SIZE, CUT);
+  const floorGeo = new THREE.ExtrudeGeometry(floorShape, { depth: 0.4, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.06, bevelSegments: 2 });
+  floorGeo.rotateX(-Math.PI / 2);
+  floorGeo.computeBoundingBox();
+  const bb = floorGeo.boundingBox;
+  const uvAttr = floorGeo.attributes.uv;
+  const pos = floorGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    uvAttr.setXY(i, (x - bb.min.x) / (bb.max.x - bb.min.x), (z - bb.min.z) / (bb.max.z - bb.min.z));
+  }
+  uvAttr.needsUpdate = true;
+
+  const floorMat = new THREE.MeshStandardMaterial({
+    map: buildFloorColorTexture(),
+    emissiveMap: buildFloorEmissiveTexture(),
+    emissive: 0xffffff,
+    emissiveIntensity: 1.6,
+    roughness: 0.55,
+    metalness: 0.35
+  });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.position.y = 0;
+  group.add(floor);
+
+  // raised center dais
+  const daisShape = octagonShape(2.6, 0.7);
+  const daisGeo = new THREE.ExtrudeGeometry(daisShape, { depth: 0.3, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2 });
+  daisGeo.rotateX(-Math.PI / 2);
+  const daisMat = new THREE.MeshStandardMaterial({ color: 0x2c2d32, roughness: 0.5, metalness: 0.6 });
+  const dais = new THREE.Mesh(daisGeo, daisMat);
+  dais.position.y = 0.4;
+  group.add(dais);
+
+  // glowing logo disc on top of the dais
+  const logoTex = buildLogoTexture();
+  const discMat = new THREE.MeshStandardMaterial({
+    map: logoTex, emissiveMap: logoTex, emissive: 0xffffff, emissiveIntensity: 1.3,
+    roughness: 0.4, metalness: 0.2
+  });
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(1.9, 48), discMat);
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.71;
+  group.add(disc);
+
+  // ring light around the dais
+  const ringMat = new THREE.MeshStandardMaterial({ color: 0x201030, emissive: 0xa24cf0, emissiveIntensity: 1.8 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.15, 0.05, 8, 48), ringMat);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.72;
+  group.add(ring);
+
+  // corner planters (4x)
+  const cornerOffset = FLOOR_SIZE - CUT * 0.55;
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => {
+    const p = buildPlanter();
+    p.position.set(sx * cornerOffset, 0.4, sz * cornerOffset);
+    p.rotation.y = Math.random() * 0.3;
+    group.add(p);
+  });
+
+  // billboards at the two "top" corners
+  const billboardTex = buildBillboardTexture();
+  [[-1, -1], [1, -1]].forEach(([sx, sz]) => {
+    const b = buildBillboard(billboardTex);
+    b.position.set(sx * (FLOOR_SIZE - CUT * 0.3), 0.4, sz * (FLOOR_SIZE - CUT * 0.3));
+    b.rotation.y = sx > 0 ? Math.PI * 0.15 : -Math.PI * 0.15;
+    group.add(b);
+  });
+
+  // staircases (top and bottom center)
+  const stairsTop = buildStaircase(6, 3.2);
+  stairsTop.position.set(0, 0.4, -FLOOR_SIZE + 0.1);
+  group.add(stairsTop);
+
+  const stairsBottom = buildStaircase(6, 3.2);
+  stairsBottom.rotation.y = Math.PI;
+  stairsBottom.position.set(0, 0.4, FLOOR_SIZE - 0.1);
+  group.add(stairsBottom);
+
+  // subtle accent point lights (purple / teal), cheap for real-time use
+  const centerLight = new THREE.PointLight(0xa24cf0, 3.5, 14, 2);
+  centerLight.position.set(0, 3, 0);
+  group.add(centerLight);
+
+  const tealLight = new THREE.PointLight(0x38e8c0, 1.6, 10, 2);
+  tealLight.position.set(0, 1.5, 0);
+  group.add(tealLight);
+
+  return group;
+}
+
+// expose globally so it can be lifted straight into another project
+window.createNyvoraArenaFloor = createNyvoraArenaFloor;
+
+/* =========================================================================
+   Preview scene (only runs in this standalone file)
+   ========================================================================= */
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x08080b);
+scene.fog = new THREE.Fog(0x08080b, 18, 48);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 200);
+camera.position.set(0, 15, 17);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+document.getElementById('canvas-wrap').appendChild(renderer.domElement);
+
+const controls = new SimpleOrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.minDistance = 8;
+controls.maxDistance = 40;
+
+scene.add(new THREE.HemisphereLight(0x555566, 0x0a0a0f, 0.8));
+const key = new THREE.DirectionalLight(0xffffff, 0.6);
+key.position.set(8, 12, 6);
+scene.add(key);
+
+const arenaFloor = createNyvoraArenaFloor();
+scene.add(arenaFloor);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
