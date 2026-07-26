@@ -397,15 +397,16 @@ export class WorldScene {
    * null if nothing is in range. */
   tryInteract(): InteractionTarget | null {
     if (!this.currentTarget) return null;
-    if (this.currentTarget.kind === "gather") {
-      const node = this.resourceNodes.find((n) => n.id === this.currentTarget!.nodeId);
+    const target = this.currentTarget;
+    if (target.kind === "gather") {
+      const node = this.resourceNodes.find((n) => n.id === target.nodeId);
       if (node && node.active) {
         node.active = false;
         node.mesh.visible = false;
         node.respawnTimer = RESPAWN_SECONDS;
       }
     }
-    return this.currentTarget;
+    return target;
   }
 
   private updateDayLighting() {
