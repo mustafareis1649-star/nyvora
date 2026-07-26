@@ -6,12 +6,14 @@ React + TypeScript + Three.js, with Supabase wired up for saving progress.
 
 ## What's actually working here
 
+- **Sign in with Google** (via Supabase Auth) gates access to the game —
+  falls back to playing locally with no login if Supabase isn't configured
 - Character creation (name, class, color, height) → stored in React state
 - A live Three.js world: ground, procedurally placed buildings, a day/night
   cycle that shifts sun position, light intensity, and sky color over time
 - WASD / arrow-key movement with a camera that follows behind the character
-- Save / load position and character data — to Supabase if configured, or to
-  the browser's localStorage automatically if not
+- Save / load position and character data, scoped to the signed-in user — to
+  Supabase if configured, or to the browser's localStorage automatically if not
 
 ## What this is NOT (yet)
 
@@ -32,15 +34,40 @@ npm run dev
 
 Then open the URL Vite prints (typically http://localhost:5173).
 
-## Optional: connect Supabase
+## Setting up Google sign-in
 
-1. Create a free project at https://supabase.com
-2. Copy `.env.example` to `.env.local` and fill in your project URL and anon key
-3. In the Supabase SQL editor, run the `create table player_saves (...)`
-   statement found in the comment at the bottom of `src/lib/supabaseClient.ts`
+Without Supabase configured, the game skips login entirely and saves locally,
+so you can develop without setting any of this up right away. To turn on
+"Continue with Google":
 
-Without Supabase configured, saving/loading still works via localStorage, so
-you can develop without setting it up right away.
+1. **Create a Supabase project** at https://supabase.com (free tier is fine).
+2. Copy `.env.example` to `.env.local` and fill in your project's URL and
+   anon key (Project Settings → API).
+3. **Create Google OAuth credentials:**
+   - Go to https://console.cloud.google.com/apis/credentials
+   - Create a project (or pick an existing one), then
+     "Create Credentials" → "OAuth client ID" → Application type: **Web application**
+   - Under "Authorized redirect URIs", add the callback URL Supabase shows you
+     on its Google provider settings page (looks like
+     `https://<your-project-ref>.supabase.co/auth/v1/callback`)
+   - Copy the generated **Client ID** and **Client Secret**
+4. **Enable Google in Supabase:** in your Supabase dashboard, go to
+   Authentication → Providers → Google, toggle it on, and paste in the
+   Client ID and Client Secret from step 3. Save.
+5. **Add your site URL:** in Authentication → URL Configuration, add your
+   local dev URL (`http://localhost:5173`) and your live Vercel URL to the
+   allowed redirect URLs.
+6. **Create the saves table** — in the Supabase SQL editor, run the
+   `create table player_saves (...)` statement found in the comment at the
+   bottom of `src/lib/supabaseClient.ts`. It links each save row to the
+   signed-in Google account and locks it down with row-level security so
+   players can only read/write their own data.
+7. **On Vercel:** add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
+   Environment Variables in your project's Vercel settings, then redeploy.
+
+Once all of this is in place, opening the game shows a "Continue with Google"
+screen before character creation, and progress follows the player's Google
+account across devices.
 
 ## Suggested next steps
 

@@ -5,10 +5,11 @@ import { savePlayerState, loadPlayerState } from "@/lib/supabaseClient";
 
 interface GameCanvasProps {
   character: Character;
+  userId?: string;
   onExitToMenu: () => void;
 }
 
-export function GameCanvas({ character, onExitToMenu }: GameCanvasProps) {
+export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<WorldScene | null>(null);
   const [pos, setPos] = useState({ x: 0, y: 0, z: 0 });
@@ -21,7 +22,7 @@ export function GameCanvas({ character, onExitToMenu }: GameCanvasProps) {
     sceneRef.current = scene;
     scene.setCharacterAppearance(character);
 
-    loadPlayerState(character.id).then((saved) => {
+    loadPlayerState(userId).then((saved) => {
       if (saved && saved.character.id === character.id) {
         scene.setPosition(saved.position.x, saved.position.y, saved.position.z);
       }
@@ -41,7 +42,7 @@ export function GameCanvas({ character, onExitToMenu }: GameCanvasProps) {
       position: pos,
       createdAt: new Date().toISOString(),
     };
-    await savePlayerState(state);
+    await savePlayerState(state, userId);
     setSaving(false);
   };
 
