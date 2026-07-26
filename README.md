@@ -9,11 +9,18 @@ React + TypeScript + Three.js, with Supabase wired up for saving progress.
 - **Sign in with Google** (via Supabase Auth) gates access to the game —
   falls back to playing locally with no login if Supabase isn't configured
 - Character creation (name, class, color, height) → stored in React state
-- A live Three.js world: ground, procedurally placed buildings, a day/night
-  cycle that shifts sun position, light intensity, and sky color over time
-- WASD / arrow-key movement with a camera that follows behind the character
-- Save / load position and character data, scoped to the signed-in user — to
-  Supabase if configured, or to the browser's localStorage automatically if not
+- A live Three.js world: ground, procedurally placed buildings, fixed bright
+  daytime lighting (no day/night cycle)
+- WASD / arrow-key movement with a camera that follows behind the character,
+  and real collision with buildings (slides along walls instead of clipping)
+- **Gathering & market**: trees, stone, and iron ore nodes scattered around
+  the map — walk up and press **E** to gather; nodes respawn after 20s
+- **Ashfall Market stall**: walk up and press **E** to open it, sell
+  gathered materials for gold, and spend gold on cosmetic-only outfits
+  (color/appearance swaps — never combat power)
+- Save / load position, inventory, and gold, scoped to the signed-in user —
+  to Supabase if configured, or to the browser's localStorage automatically
+  if not
 
 ## What this is NOT (yet)
 

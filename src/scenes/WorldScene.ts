@@ -1,10 +1,11 @@
 import * as THREE from "three";
-import type { Character } from "@/types/game";
+import type { Character, ResourceType } from "@/types/game";
 
 const MOVE_SPEED = 6.5; // units per second
 const TURN_SPEED = 3.2; // radians per second
-const DAY_LENGTH_SECONDS = 240; // full day/night cycle length
 const CHARACTER_RADIUS = 0.5; // used for building collision checks
+const INTERACT_RADIUS = 3; // distance to trigger a gather/market prompt
+const RESPAWN_SECONDS = 20; // time before a gathered node reappears
 
 interface InputState {
   forward: boolean;
@@ -20,6 +21,19 @@ interface BoxCollider {
   maxZ: number;
 }
 
+interface ResourceNode {
+  id: string;
+  type: ResourceType;
+  mesh: THREE.Object3D;
+  position: THREE.Vector2;
+  active: boolean;
+  respawnTimer: number;
+}
+
+export type InteractionTarget =
+  | { kind: "gather"; label: string; resourceType: ResourceType; nodeId: string }
+  | { kind: "market"; label: string };
+
 export class WorldScene {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -31,7 +45,10 @@ export class WorldScene {
   private hemi!: THREE.HemisphereLight;
   private input: InputState = { forward: false, back: false, left: false, right: false };
   private colliders: BoxCollider[] = [];
-  private elapsed = 0;
+  private resourceNodes: ResourceNode[] = [];
+  private marketPosition = new THREE.Vector2(6, -6);
+  private currentTarget: InteractionTarget | null = null;
+  private onTargetChange?: (target: InteractionTarget | null) => void;
   private disposed = false;
   private onPositionChange?: (pos: THREE.Vector3) => void;
 
@@ -57,6 +74,8 @@ export class WorldScene {
     this.setupLights();
     this.setupGround();
     this.setupCityProps();
+    this.setupResourceNodes();
+    this.setupMarket();
     this.setupCharacter(); // default appearance, overridden by setCharacterAppearance
     this.bindInput();
 
@@ -159,7 +178,105 @@ export class WorldScene {
     }
   }
 
-  private setupCharacter() {
+  private setupResourceNodes() {
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x3f7a4a, roughness: 0.8 });
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8d9e, roughness: 0.85 });
+    const oreMat = new THREE.MeshStandardMaterial({
+      color: 0xd9c24c,
+      emissive: 0x5c521f,
+      emissiveIntensity: 0.4,
+      roughness: 0.5,
+      metalness: 0.4,
+    });
+
+    const rand = (seed: number) => {
+      const x = Math.sin(seed * 12.9898) * 43758.5453;
+      return x - Math.floor(x);
+    };
+
+    let nodeSeed = 500;
+    const placeRing = (
+      type: ResourceType,
+      count: number,
+      minRadius: number,
+      maxRadius: number
+    ) => {
+      for (let i = 0; i < count; i++) {
+        const angle = rand(nodeSeed++) * Math.PI * 2;
+        const radius = minRadius + rand(nodeSeed++) * (maxRadius - minRadius);
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+
+        let mesh: THREE.Object3D;
+        if (type === "wood") {
+          const group = new THREE.Group();
+          const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.32, 2.2, 8), woodMat);
+          trunk.position.y = 1.1;
+          const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.3, 2.4, 8), leafMat);
+          leaves.position.y = 2.8;
+          group.add(trunk, leaves);
+          group.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; } });
+          mesh = group;
+        } else if (type === "stone") {
+          const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.9, 0), stoneMat);
+          rock.position.y = 0.6;
+          rock.castShadow = true;
+          rock.receiveShadow = true;
+          mesh = rock;
+        } else {
+          const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8, 0), oreMat);
+          rock.position.y = 0.55;
+          rock.castShadow = true;
+          mesh = rock;
+        }
+
+        mesh.position.x = x;
+        mesh.position.z = z;
+        this.scene.add(mesh);
+
+        this.resourceNodes.push({
+          id: `${type}-${i}-${Math.round(x)}-${Math.round(z)}`,
+          type,
+          mesh,
+          position: new THREE.Vector2(x, z),
+          active: true,
+          respawnTimer: 0,
+        });
+      }
+    };
+
+    placeRing("wood", 10, 14, 55);
+    placeRing("stone", 8, 18, 60);
+    placeRing("ore", 6, 25, 65);
+  }
+
+  private setupMarket() {
+    const { x, y: z } = this.marketPosition;
+
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x2a2c3e, roughness: 0.6 });
+    const roofMat = new THREE.MeshStandardMaterial({
+      color: 0xf5a623,
+      emissive: 0xf5a623,
+      emissiveIntensity: 0.25,
+    });
+
+    const stallGroup = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.6, 2.4), baseMat);
+    base.position.y = 0.8;
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(2.6, 1.4, 4), roofMat);
+    roof.position.y = 2.4;
+    roof.rotation.y = Math.PI / 4;
+    stallGroup.add(base, roof);
+    stallGroup.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = true; });
+    stallGroup.position.set(x, 0, z);
+    this.scene.add(stallGroup);
+
+    // keep the market stall itself solid so players walk up to its edge
+    this.colliders.push({ minX: x - 1.7, maxX: x + 1.7, minZ: z - 1.2, maxZ: z + 1.2 });
+  }
+
+
     this.character = new THREE.Group();
 
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x8b7cf6, roughness: 0.5 });
@@ -225,35 +342,82 @@ export class WorldScene {
     this.onPositionChange = callback;
   }
 
-  private updateDayNightCycle(delta: number) {
-    this.elapsed += delta;
-    const t = (this.elapsed % DAY_LENGTH_SECONDS) / DAY_LENGTH_SECONDS; // 0..1
-    const angle = t * Math.PI * 2;
+  /** Called whenever the nearby gather/market prompt should change (or clear). */
+  onInteractionTargetChange(callback: (target: InteractionTarget | null) => void) {
+    this.onTargetChange = callback;
+  }
 
-    const sunHeight = Math.sin(angle);
-    const sunX = Math.cos(angle) * 60;
-    const sunY = Math.max(sunHeight, -0.15) * 60 + 10;
-    const sunZ = 20;
-    this.sun.position.set(sunX, sunY, sunZ);
-    this.sun.target.position.copy(this.character.position);
+  private updateInteractionTarget() {
+    const cx = this.character.position.x;
+    const cz = this.character.position.z;
+    let nearest: InteractionTarget | null = null;
+    let nearestDist = INTERACT_RADIUS;
 
-    const dayIntensity = THREE.MathUtils.clamp(sunHeight + 0.15, 0, 1);
-    this.sun.intensity = 0.15 + dayIntensity * 1.3;
-    this.hemi.intensity = 0.25 + dayIntensity * 0.55;
-
-    // sky color: deep violet-night -> warm dusk -> bright day
-    const nightColor = new THREE.Color(0x05060d);
-    const duskColor = new THREE.Color(0x3a2a4a);
-    const dayColor = new THREE.Color(0x87b6e8);
-
-    let skyColor: THREE.Color;
-    if (dayIntensity < 0.5) {
-      skyColor = nightColor.clone().lerp(duskColor, dayIntensity * 2);
-    } else {
-      skyColor = duskColor.clone().lerp(dayColor, (dayIntensity - 0.5) * 2);
+    for (const node of this.resourceNodes) {
+      if (!node.active) continue;
+      const dist = Math.hypot(node.position.x - cx, node.position.y - cz);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        const label =
+          node.type === "wood" ? "Gather Wood" : node.type === "stone" ? "Gather Stone" : "Mine Iron Ore";
+        nearest = { kind: "gather", label, resourceType: node.type, nodeId: node.id };
+      }
     }
-    this.renderer.setClearColor(skyColor);
-    if (this.scene.fog) (this.scene.fog as THREE.Fog).color = skyColor;
+
+    const marketDist = Math.hypot(this.marketPosition.x - cx, this.marketPosition.y - cz);
+    if (marketDist < nearestDist) {
+      nearest = { kind: "market", label: "Open Market" };
+    }
+
+    const changed =
+      (nearest?.kind ?? null) !== (this.currentTarget?.kind ?? null) ||
+      (nearest?.kind === "gather" &&
+        this.currentTarget?.kind === "gather" &&
+        nearest.nodeId !== this.currentTarget.nodeId);
+
+    if (changed) {
+      this.currentTarget = nearest;
+      this.onTargetChange?.(nearest);
+    }
+  }
+
+  private updateResourceRespawns(delta: number) {
+    for (const node of this.resourceNodes) {
+      if (node.active) continue;
+      node.respawnTimer -= delta;
+      if (node.respawnTimer <= 0) {
+        node.active = true;
+        node.mesh.visible = true;
+      }
+    }
+  }
+
+  /** Call when the player presses the interact key. Performs the current
+   * nearby action (gather or open market) and returns what happened, or
+   * null if nothing is in range. */
+  tryInteract(): InteractionTarget | null {
+    if (!this.currentTarget) return null;
+    if (this.currentTarget.kind === "gather") {
+      const node = this.resourceNodes.find((n) => n.id === this.currentTarget!.nodeId);
+      if (node && node.active) {
+        node.active = false;
+        node.mesh.visible = false;
+        node.respawnTimer = RESPAWN_SECONDS;
+      }
+    }
+    return this.currentTarget;
+  }
+
+  private updateDayLighting() {
+    // Fixed bright daytime lighting — no day/night cycle.
+    this.sun.position.set(40, 70, 30);
+    this.sun.target.position.copy(this.character.position);
+    this.sun.intensity = 1.4;
+    this.hemi.intensity = 0.75;
+
+    const dayColor = new THREE.Color(0x8fc6f2);
+    this.renderer.setClearColor(dayColor);
+    if (this.scene.fog) (this.scene.fog as THREE.Fog).color = dayColor;
   }
 
   private collidesAt(x: number, z: number): boolean {
@@ -324,8 +488,10 @@ export class WorldScene {
       if (this.disposed) return;
       requestAnimationFrame(animate);
       const delta = Math.min(this.clock.getDelta(), 0.1);
-      this.updateDayNightCycle(delta);
+      this.updateDayLighting();
       this.updateMovement(delta);
+      this.updateInteractionTarget();
+      this.updateResourceRespawns(delta);
       this.renderer.render(this.scene, this.camera);
     };
     this.handleResize();
