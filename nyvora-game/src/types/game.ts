@@ -21,6 +21,9 @@ export interface PlayerSaveState {
   createdAt: string;
   inventory?: Record<ResourceType, number>;
   gold?: number;
+  hp?: number;
+  skillPoints?: number;
+  unlockedSkills?: string[];
 }
 
 export type ResourceType = "wood" | "stone" | "ore";
@@ -79,3 +82,32 @@ export const CLASS_INFO: Record<
     color: "#8B7CF6",
   },
 };
+
+export interface SkillDef {
+  id: string;
+  label: string;
+  description: string;
+  effect: { damage?: number; maxHp?: number; damageReduction?: number };
+}
+
+export const SKILL_TREE: Record<CharacterClass, SkillDef[]> = {
+  warrior: [
+    { id: "brutal-strikes", label: "Brutal Strikes", description: "+15 attack damage", effect: { damage: 15 } },
+    { id: "iron-skin", label: "Iron Skin", description: "+40 max HP", effect: { maxHp: 40 } },
+    { id: "second-wind", label: "Second Wind", description: "-25% damage taken", effect: { damageReduction: 0.25 } },
+  ],
+  ranger: [
+    { id: "precision", label: "Precision", description: "+15 attack damage", effect: { damage: 15 } },
+    { id: "swift-feet", label: "Swift Feet", description: "+40 max HP", effect: { maxHp: 40 } },
+    { id: "evasion", label: "Evasion", description: "-25% damage taken", effect: { damageReduction: 0.25 } },
+  ],
+  mystic: [
+    { id: "arcane-focus", label: "Arcane Focus", description: "+15 attack damage", effect: { damage: 15 } },
+    { id: "mana-shield", label: "Mana Shield", description: "+40 max HP", effect: { maxHp: 40 } },
+    { id: "elemental-ward", label: "Elemental Ward", description: "-25% damage taken", effect: { damageReduction: 0.25 } },
+  ],
+};
+
+export const BASE_MAX_HP = 100;
+export const BASE_ATTACK_DAMAGE = 20;
+export const xpToNextLevel = (level: number) => level * 100;

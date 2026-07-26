@@ -18,9 +18,15 @@ React + TypeScript + Three.js, with Supabase wired up for saving progress.
 - **Ashfall Market stall**: walk up and press **E** to open it, sell
   gathered materials for gold, and spend gold on cosmetic-only outfits
   (color/appearance swaps — never combat power)
-- Save / load position, inventory, and gold, scoped to the signed-in user —
-  to Supabase if configured, or to the browser's localStorage automatically
-  if not
+- **Combat & skills**: 10 roaming "Shade" enemies — press **Space** to
+  attack the nearest one in range; defeating one grants XP and levels you
+  up. Each level grants 1 skill point — press **K** to spend it on
+  class-specific passive skills (bonus damage, bonus max HP, or damage
+  reduction). Enemies also deal contact damage if you stand next to them,
+  and you respawn at Ashfall City with half HP if defeated
+- Save / load position, inventory, gold, HP, and unlocked skills, scoped to
+  the signed-in user — to Supabase if configured, or to the browser's
+  localStorage automatically if not
 
 ## What this is NOT (yet)
 

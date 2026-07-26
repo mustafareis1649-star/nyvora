@@ -5,15 +5,44 @@ import type {
   PlayerSaveState,
   ResourceType,
   CosmeticOption,
+  SkillDef,
 } from "@/types/game";
-import { RESOURCE_INFO, EMPTY_INVENTORY } from "@/types/game";
+import {
+  RESOURCE_INFO,
+  EMPTY_INVENTORY,
+  BASE_MAX_HP,
+  BASE_ATTACK_DAMAGE,
+  SKILL_TREE,
+  xpToNextLevel,
+} from "@/types/game";
 import { savePlayerState, loadPlayerState } from "@/lib/supabaseClient";
 import { MarketPanel } from "@/components/MarketPanel";
+import { SkillPanel } from "@/components/SkillPanel";
 
 interface GameCanvasProps {
   character: Character;
   userId?: string;
   onExitToMenu: () => void;
+}
+
+function computeMaxHp(unlockedSkills: string[], characterClass: Character["class"]) {
+  const bonus = SKILL_TREE[characterClass]
+    .filter((s) => unlockedSkills.includes(s.id))
+    .reduce((sum, s) => sum + (s.effect.maxHp ?? 0), 0);
+  return BASE_MAX_HP + bonus;
+}
+
+function computeAttackDamage(unlockedSkills: string[], characterClass: Character["class"]) {
+  const bonus = SKILL_TREE[characterClass]
+    .filter((s) => unlockedSkills.includes(s.id))
+    .reduce((sum, s) => sum + (s.effect.damage ?? 0), 0);
+  return BASE_ATTACK_DAMAGE + bonus;
+}
+
+function computeDamageReduction(unlockedSkills: string[], characterClass: Character["class"]) {
+  return SKILL_TREE[characterClass]
+    .filter((s) => unlockedSkills.includes(s.id))
+    .reduce((sum, s) => sum + (s.effect.damageReduction ?? 0), 0);
 }
 
 export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps) {
@@ -25,8 +54,22 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
   const [gold, setGold] = useState(20);
   const [prompt, setPrompt] = useState<string | null>(null);
   const [marketOpen, setMarketOpen] = useState(false);
+  const [skillPanelOpen, setSkillPanelOpen] = useState(false);
   const [activeCosmeticId, setActiveCosmeticId] = useState("default");
   const [appearance, setAppearance] = useState(character.appearance);
+  const [level, setLevel] = useState(character.level || 1);
+  const [xp, setXp] = useState(character.xp || 0);
+  const [skillPoints, setSkillPoints] = useState(0);
+  const [unlockedSkills, setUnlockedSkills] = useState<string[]>([]);
+  const [hp, setHp] = useState(BASE_MAX_HP);
+  const [combatMessage, setCombatMessage] = useState<string | null>(null);
+
+  const maxHp = computeMaxHp(unlockedSkills, character.class);
+
+  const showCombatMessage = (msg: string) => {
+    setCombatMessage(msg);
+    window.setTimeout(() => setCombatMessage((cur) => (cur === msg ? null : cur)), 1400);
+  };
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -40,6 +83,11 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
         scene.setPosition(saved.position.x, saved.position.y, saved.position.z);
         if (saved.inventory) setInventory(saved.inventory);
         if (typeof saved.gold === "number") setGold(saved.gold);
+        if (typeof saved.hp === "number") setHp(saved.hp);
+        if (typeof saved.skillPoints === "number") setSkillPoints(saved.skillPoints);
+        if (saved.unlockedSkills) setUnlockedSkills(saved.unlockedSkills);
+        if (saved.character.level) setLevel(saved.character.level);
+        if (typeof saved.character.xp === "number") setXp(saved.character.xp);
       }
     });
 
@@ -52,6 +100,64 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
     return () => scene.dispose();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // player damage from enemy contact
+  useEffect(() => {
+    sceneRef.current?.onPlayerDamage((amount) => {
+      const reduction = computeDamageReduction(unlockedSkills, character.class);
+      const actual = Math.max(1, Math.round(amount * (1 - reduction)));
+      setHp((h) => {
+        const next = h - actual;
+        if (next <= 0) {
+          showCombatMessage("You were defeated — respawning at Ashfall City");
+          sceneRef.current?.setPosition(0, 0, 0);
+          return Math.round(maxHp * 0.5);
+        }
+        return next;
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlockedSkills, maxHp]);
+
+  const handleLevelUp = (currentXp: number, currentLevel: number) => {
+    let newLevel = currentLevel;
+    let remainingXp = currentXp;
+    let pointsGained = 0;
+    while (remainingXp >= xpToNextLevel(newLevel)) {
+      remainingXp -= xpToNextLevel(newLevel);
+      newLevel += 1;
+      pointsGained += 1;
+    }
+    if (newLevel !== currentLevel) {
+      setLevel(newLevel);
+      setSkillPoints((p) => p + pointsGained);
+      showCombatMessage(`Level up! Now level ${newLevel}`);
+    }
+    setXp(remainingXp);
+  };
+
+  // attack key (Space) and skill panel key (K)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        const damage = computeAttackDamage(unlockedSkills, character.class);
+        const result = sceneRef.current?.tryAttack(damage);
+        if (!result) return;
+        if (result.killed) {
+          showCombatMessage(`Defeated a Shade! +${result.xp} XP`);
+          handleLevelUp(xp + result.xp, level);
+        } else if (result.hit) {
+          showCombatMessage("Hit!");
+        }
+      } else if (e.code === "KeyK") {
+        setSkillPanelOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlockedSkills, xp, level, character.class]);
 
   // interact key (E)
   useEffect(() => {
@@ -75,11 +181,14 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
   const handleSave = async () => {
     setSaving(true);
     const state: PlayerSaveState = {
-      character: { ...character, appearance },
+      character: { ...character, appearance, level, xp },
       position: pos,
       createdAt: new Date().toISOString(),
       inventory,
       gold,
+      hp,
+      skillPoints,
+      unlockedSkills,
     };
     await savePlayerState(state, userId);
     setSaving(false);
@@ -108,20 +217,45 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
     sceneRef.current?.setCharacterAppearance({ ...character, appearance: newAppearance });
   };
 
+  const handleUnlockSkill = (skill: SkillDef) => {
+    if (skillPoints <= 0 || unlockedSkills.includes(skill.id)) return;
+    setSkillPoints((p) => p - 1);
+    setUnlockedSkills((prev) => [...prev, skill.id]);
+    if (skill.effect.maxHp) setHp((h) => h + skill.effect.maxHp!);
+  };
+
+  const hpPct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+  const xpPct = Math.max(0, Math.min(100, (xp / xpToNextLevel(level)) * 100));
+
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "100%" }} />
 
       <div style={hudStyle.topLeft}>
         <div style={{ fontWeight: 700 }}>{character.name}</div>
-        <div style={{ fontSize: 12, color: "#9497AC", textTransform: "capitalize" }}>
-          {character.class} · Lv. {character.level} · Ashfall City
+        <div style={{ fontSize: 12, color: "#9497AC", textTransform: "capitalize", marginBottom: 8 }}>
+          {character.class} · Lv. {level} · Ashfall City
+        </div>
+        <div style={hudStyle.barTrack}>
+          <div style={{ ...hudStyle.barFill, width: `${hpPct}%`, background: "#F2545B" }} />
+        </div>
+        <div style={{ fontSize: 10, color: "#6B6E82", marginTop: 2 }}>
+          HP {Math.max(0, Math.round(hp))}/{maxHp}
+        </div>
+        <div style={{ ...hudStyle.barTrack, marginTop: 6 }}>
+          <div style={{ ...hudStyle.barFill, width: `${xpPct}%`, background: "#4CD9E0" }} />
+        </div>
+        <div style={{ fontSize: 10, color: "#6B6E82", marginTop: 2 }}>
+          XP {xp}/{xpToNextLevel(level)} · {skillPoints} skill pt
         </div>
       </div>
 
       <div style={hudStyle.topRight}>
         <button style={hudStyle.button} onClick={handleSave} disabled={saving}>
           {saving ? "Saving…" : "Save Progress"}
+        </button>
+        <button style={{ ...hudStyle.button, marginTop: 8 }} onClick={() => setSkillPanelOpen(true)}>
+          Skills (K)
         </button>
         <button style={{ ...hudStyle.button, marginTop: 8 }} onClick={onExitToMenu}>
           Exit
@@ -144,10 +278,12 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
         </div>
       </div>
 
-      {prompt ? (
+      {combatMessage ? (
+        <div style={hudStyle.combatMessage}>{combatMessage}</div>
+      ) : prompt ? (
         <div style={hudStyle.promptCenter}>Press E — {prompt}</div>
       ) : (
-        <div style={hudStyle.bottomCenter}>WASD / Arrow keys to move</div>
+        <div style={hudStyle.bottomCenter}>WASD to move · Space to attack · E to interact</div>
       )}
 
       {marketOpen && (
@@ -158,6 +294,16 @@ export function GameCanvas({ character, userId, onExitToMenu }: GameCanvasProps)
           onSell={handleSell}
           onBuyCosmetic={handleBuyCosmetic}
           onClose={() => setMarketOpen(false)}
+        />
+      )}
+
+      {skillPanelOpen && (
+        <SkillPanel
+          characterClass={character.class}
+          skillPoints={skillPoints}
+          unlockedSkills={unlockedSkills}
+          onUnlock={handleUnlockSkill}
+          onClose={() => setSkillPanelOpen(false)}
         />
       )}
     </div>
@@ -172,9 +318,22 @@ const hudStyle: Record<string, React.CSSProperties> = {
     color: "#E9EAF2",
     fontFamily: "sans-serif",
     background: "rgba(10,11,18,0.55)",
-    padding: "10px 16px",
+    padding: "12px 16px",
     borderRadius: 10,
     backdropFilter: "blur(6px)",
+    width: 200,
+  },
+  barTrack: {
+    width: "100%",
+    height: 6,
+    borderRadius: 100,
+    background: "rgba(255,255,255,0.1)",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: "100%",
+    borderRadius: 100,
+    transition: "width 0.2s ease",
   },
   topRight: {
     position: "absolute",
@@ -218,6 +377,7 @@ const hudStyle: Record<string, React.CSSProperties> = {
     background: "rgba(10,11,18,0.55)",
     padding: "8px 16px",
     borderRadius: 100,
+    whiteSpace: "nowrap",
   },
   promptCenter: {
     position: "absolute",
@@ -229,6 +389,19 @@ const hudStyle: Record<string, React.CSSProperties> = {
     fontSize: 14,
     fontWeight: 600,
     background: "rgba(139,124,246,0.85)",
+    padding: "10px 20px",
+    borderRadius: 100,
+  },
+  combatMessage: {
+    position: "absolute",
+    bottom: 20,
+    left: "50%",
+    transform: "translateX(-50%)",
+    color: "#fff",
+    fontFamily: "sans-serif",
+    fontSize: 14,
+    fontWeight: 700,
+    background: "rgba(242,84,91,0.9)",
     padding: "10px 20px",
     borderRadius: 100,
   },

@@ -6,6 +6,13 @@ const TURN_SPEED = 3.2; // radians per second
 const CHARACTER_RADIUS = 0.5; // used for building collision checks
 const INTERACT_RADIUS = 3; // distance to trigger a gather/market prompt
 const RESPAWN_SECONDS = 20; // time before a gathered node reappears
+const ATTACK_RANGE = 4; // distance the player's attack reaches
+const ENEMY_MAX_HP = 60;
+const ENEMY_XP_REWARD = 25;
+const ENEMY_RESPAWN_SECONDS = 25;
+const CONTACT_DAMAGE = 6;
+const CONTACT_DAMAGE_RADIUS = 1.8;
+const CONTACT_COOLDOWN_SECONDS = 1.2;
 
 interface InputState {
   forward: boolean;
@@ -30,9 +37,22 @@ interface ResourceNode {
   respawnTimer: number;
 }
 
+interface Enemy {
+  id: string;
+  mesh: THREE.Mesh;
+  baseColor: THREE.Color;
+  position: THREE.Vector2;
+  hp: number;
+  alive: boolean;
+  respawnTimer: number;
+  hitCooldown: number; // time left before this enemy can damage the player again
+}
+
 export type InteractionTarget =
   | { kind: "gather"; label: string; resourceType: ResourceType; nodeId: string }
   | { kind: "market"; label: string };
+
+export type AttackResult = { hit: boolean; killed: boolean; xp: number };
 
 export class WorldScene {
   private renderer: THREE.WebGLRenderer;
@@ -46,9 +66,11 @@ export class WorldScene {
   private input: InputState = { forward: false, back: false, left: false, right: false };
   private colliders: BoxCollider[] = [];
   private resourceNodes: ResourceNode[] = [];
+  private enemies: Enemy[] = [];
   private marketPosition = new THREE.Vector2(6, -6);
   private currentTarget: InteractionTarget | null = null;
   private onTargetChange?: (target: InteractionTarget | null) => void;
+  private onPlayerDamaged?: (amount: number) => void;
   private disposed = false;
   private onPositionChange?: (pos: THREE.Vector3) => void;
 
@@ -76,6 +98,7 @@ export class WorldScene {
     this.setupCityProps();
     this.setupResourceNodes();
     this.setupMarket();
+    this.setupEnemies();
     this.setupCharacter(); // default appearance, overridden by setCharacterAppearance
     this.bindInput();
 
@@ -276,6 +299,55 @@ export class WorldScene {
     this.colliders.push({ minX: x - 1.7, maxX: x + 1.7, minZ: z - 1.2, maxZ: z + 1.2 });
   }
 
+  private setupEnemies() {
+    const rand = (seed: number) => {
+      const x = Math.sin(seed * 7.233) * 21343.123;
+      return x - Math.floor(x);
+    };
+
+    const spawnShade = (id: string, x: number, z: number) => {
+      const baseColor = new THREE.Color(0x8b2e45);
+      const mat = new THREE.MeshStandardMaterial({
+        color: baseColor.clone(),
+        emissive: 0xff3355,
+        emissiveIntensity: 0.6,
+        roughness: 0.4,
+      });
+      const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.9, 0), mat);
+      mesh.position.set(x, 1, z);
+      mesh.castShadow = true;
+      this.scene.add(mesh);
+
+      this.enemies.push({
+        id,
+        mesh,
+        baseColor,
+        position: new THREE.Vector2(x, z),
+        hp: ENEMY_MAX_HP,
+        alive: true,
+        respawnTimer: 0,
+        hitCooldown: 0,
+      });
+    };
+
+    // guaranteed enemies close to spawn, in the clear central area, so
+    // players find combat immediately instead of having to explore first
+    spawnShade("shade-near-0", 10, 4);
+    spawnShade("shade-near-1", -9, 6);
+    spawnShade("shade-near-2", 4, -14);
+    spawnShade("shade-near-3", -6, -10);
+
+    // wider ring of enemies scattered further out for ongoing exploration
+    let seed = 9001;
+    for (let i = 0; i < 10; i++) {
+      const angle = rand(seed++) * Math.PI * 2;
+      const radius = 22 + rand(seed++) * 45;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      spawnShade(`shade-${i}`, x, z);
+    }
+  }
+
   private setupCharacter() {
     this.character = new THREE.Group();
 
@@ -392,6 +464,70 @@ export class WorldScene {
     }
   }
 
+  /** Called whenever an alive enemy makes contact and damages the player. */
+  onPlayerDamage(callback: (amount: number) => void) {
+    this.onPlayerDamaged = callback;
+  }
+
+  /** Attacks the nearest alive enemy within range, if any. */
+  tryAttack(damage: number): AttackResult | null {
+    const cx = this.character.position.x;
+    const cz = this.character.position.z;
+    let target: Enemy | null = null;
+    let nearestDist = ATTACK_RANGE;
+
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) continue;
+      const dist = Math.hypot(enemy.position.x - cx, enemy.position.y - cz);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        target = enemy;
+      }
+    }
+    if (!target) return null;
+
+    target.hp -= damage;
+    const frac = Math.max(target.hp, 0) / ENEMY_MAX_HP;
+    const mat = target.mesh.material as THREE.MeshStandardMaterial;
+    mat.color.copy(target.baseColor).lerp(new THREE.Color(0x000000), 1 - frac);
+
+    if (target.hp <= 0) {
+      target.alive = false;
+      target.mesh.visible = false;
+      target.respawnTimer = ENEMY_RESPAWN_SECONDS;
+      return { hit: true, killed: true, xp: ENEMY_XP_REWARD };
+    }
+    return { hit: true, killed: false, xp: 0 };
+  }
+
+  private updateEnemies(delta: number) {
+    const cx = this.character.position.x;
+    const cz = this.character.position.z;
+
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) {
+        enemy.respawnTimer -= delta;
+        if (enemy.respawnTimer <= 0) {
+          enemy.alive = true;
+          enemy.hp = ENEMY_MAX_HP;
+          enemy.mesh.visible = true;
+          (enemy.mesh.material as THREE.MeshStandardMaterial).color.copy(enemy.baseColor);
+        }
+        continue;
+      }
+
+      if (enemy.hitCooldown > 0) enemy.hitCooldown -= delta;
+      const dist = Math.hypot(enemy.position.x - cx, enemy.position.y - cz);
+      if (dist < CONTACT_DAMAGE_RADIUS && enemy.hitCooldown <= 0) {
+        enemy.hitCooldown = CONTACT_COOLDOWN_SECONDS;
+        this.onPlayerDamaged?.(CONTACT_DAMAGE);
+      }
+
+      // subtle idle bob so the world doesn't feel completely static
+      enemy.mesh.position.y = 1 + Math.sin(performance.now() / 400 + enemy.position.x) * 0.15;
+    }
+  }
+
   /** Call when the player presses the interact key. Performs the current
    * nearby action (gather or open market) and returns what happened, or
    * null if nothing is in range. */
@@ -493,6 +629,7 @@ export class WorldScene {
       this.updateMovement(delta);
       this.updateInteractionTarget();
       this.updateResourceRespawns(delta);
+      this.updateEnemies(delta);
       this.renderer.render(this.scene, this.camera);
     };
     this.handleResize();
