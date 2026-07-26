@@ -4,12 +4,20 @@ import type { Character } from "@/types/game";
 const MOVE_SPEED = 6.5; // units per second
 const TURN_SPEED = 3.2; // radians per second
 const DAY_LENGTH_SECONDS = 240; // full day/night cycle length
+const CHARACTER_RADIUS = 0.5; // used for building collision checks
 
 interface InputState {
   forward: boolean;
   back: boolean;
   left: boolean;
   right: boolean;
+}
+
+interface BoxCollider {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
 }
 
 export class WorldScene {
@@ -22,6 +30,7 @@ export class WorldScene {
   private ambient!: THREE.AmbientLight;
   private hemi!: THREE.HemisphereLight;
   private input: InputState = { forward: false, back: false, left: false, right: false };
+  private colliders: BoxCollider[] = [];
   private elapsed = 0;
   private disposed = false;
   private onPositionChange?: (pos: THREE.Vector3) => void;
@@ -132,6 +141,13 @@ export class WorldScene {
         building.receiveShadow = true;
         this.scene.add(building);
 
+        this.colliders.push({
+          minX: px - width / 2,
+          maxX: px + width / 2,
+          minZ: pz - width / 2,
+          maxZ: pz + width / 2,
+        });
+
         // window glow strip
         const glow = new THREE.Mesh(
           new THREE.BoxGeometry(width * 0.9, 0.3, width * 0.9),
@@ -240,6 +256,20 @@ export class WorldScene {
     if (this.scene.fog) (this.scene.fog as THREE.Fog).color = skyColor;
   }
 
+  private collidesAt(x: number, z: number): boolean {
+    for (const c of this.colliders) {
+      if (
+        x > c.minX - CHARACTER_RADIUS &&
+        x < c.maxX + CHARACTER_RADIUS &&
+        z > c.minZ - CHARACTER_RADIUS &&
+        z < c.maxZ + CHARACTER_RADIUS
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private updateMovement(delta: number) {
     let turn = 0;
     if (this.input.left) turn += TURN_SPEED * delta;
@@ -254,7 +284,23 @@ export class WorldScene {
       const forwardDir = new THREE.Vector3(0, 0, 1).applyQuaternion(
         this.character.quaternion
       );
-      this.character.position.addScaledVector(forwardDir, move);
+      const deltaX = forwardDir.x * move;
+      const deltaZ = forwardDir.z * move;
+      const curX = this.character.position.x;
+      const curZ = this.character.position.z;
+
+      // try full move first; if blocked, slide along whichever axis is clear
+      // so walking into a wall doesn't just stop the character dead — it
+      // slides along the wall instead, the way most 3D games handle it.
+      if (!this.collidesAt(curX + deltaX, curZ + deltaZ)) {
+        this.character.position.x += deltaX;
+        this.character.position.z += deltaZ;
+      } else if (!this.collidesAt(curX + deltaX, curZ)) {
+        this.character.position.x += deltaX;
+      } else if (!this.collidesAt(curX, curZ + deltaZ)) {
+        this.character.position.z += deltaZ;
+      }
+      // else: fully blocked, don't move
     }
 
     // camera follows behind and slightly above the character
