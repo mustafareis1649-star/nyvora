@@ -276,7 +276,7 @@ export class WorldScene {
     this.colliders.push({ minX: x - 1.7, maxX: x + 1.7, minZ: z - 1.2, maxZ: z + 1.2 });
   }
 
-
+  private setupCharacter() {
     this.character = new THREE.Group();
 
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0x8b7cf6, roughness: 0.5 });
